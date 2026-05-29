@@ -1,0 +1,107 @@
+# PP-LCNetV2 文本框三分类：印刷体 / 手写文本 / 手写符号
+# 训练（在仓库根目录）:
+#   python tools/train.py -c mobile_v5/configs/cls/pp_lcnet_v2_textbox_hw3.yml
+# 导出推理模型:
+#   python tools/export_model.py -c mobile_v5/configs/cls/pp_lcnet_v2_textbox_hw3.yml -o <导出目录>
+# 数据: train_data/cls/train.txt 每行  图片路径<TAB>类别id  id 与 label_list 顺序一致 (0,1,2)
+
+Global:
+  model_name: PP_LCNetV2_textbox_hw3
+  use_gpu: true
+  epoch_num: 150
+  log_smooth_window: 20
+  print_batch_step: 10
+  save_model_dir: ./output/cls/pp_lcnet_v2_hw3
+  save_epoch_step: 5
+  eval_batch_step: [0, 1000]
+  cal_metric_during_train: true
+  pretrained_model: https://paddle-imagenet-models-name.bj.bcebos.com/dygraph/legendary_models/PPLCNetV2_base_ssld_pretrained.pdparams
+  checkpoints:
+  save_inference_dir:
+  use_visualdl: false
+  infer_img: doc/imgs_words_en/word_10.png
+  label_list: ["printed", "handwriting_text", "handwriting_symbol"]
+
+Architecture:
+  model_type: cls
+  algorithm: CLS
+  Transform:
+  Backbone:
+    name: PPLCNetV2_cls_base
+    scale: 1.0
+  Neck:
+  Head:
+    name: ClsHead
+    class_dim: 3
+
+Loss:
+  name: ClsFocalLoss
+  class_dim: 3
+  gamma: 2.0
+  class_weights: [1.329, 1.263, 0.687]
+  normalize_class_weights: true
+
+Optimizer:
+  name: Adam
+  beta1: 0.9
+  beta2: 0.999
+  lr:
+    name: Cosine
+    learning_rate: 0.001
+    warmup_epoch: 2
+  regularizer:
+    name: L2
+    factor: 0.00001
+
+PostProcess:
+  name: ClsPostProcess
+
+Metric:
+  name: ClsMetric
+  main_indicator: acc
+
+Train:
+  dataset:
+    name: SimpleDataSet
+    data_dir: ./train_data/cls
+    label_file_list:
+      - ./train_data/cls/train.txt
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - ClsLabelEncode:
+      - BaseDataAugmentation:
+      - RandAugment:
+      - ClsResizeImg:
+          image_shape: [3, 48, 192]
+      - KeepKeys:
+          keep_keys: ["image", "label"]
+  loader:
+    shuffle: true
+    batch_size_per_card: 256
+    drop_last: true
+    num_workers: 8
+
+Eval:
+  dataset:
+    name: SimpleDataSet
+    data_dir: ./train_data/cls
+    label_file_list:
+      - ./train_data/cls/test.txt
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - ClsLabelEncode:
+      - ClsResizeImg:
+          image_shape: [3, 48, 192]
+      - KeepKeys:
+          keep_keys: ["image", "label"]
+  loader:
+    shuffle: false
+    drop_last: false
+    batch_size_per_card: 256
+    num_workers: 4
+
+profiler_options: null

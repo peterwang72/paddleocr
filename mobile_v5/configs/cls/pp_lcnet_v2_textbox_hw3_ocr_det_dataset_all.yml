@@ -1,0 +1,114 @@
+# PP-LCNetV2 文本框三分类 — ocr_det_dataset_cls_hw3
+# 数据生成: python convert_to_cls_hw3.py --bg-merged-dir ... --det-dir ...
+#
+# 训练 batch=1、每50步记录显存/时间 (PaddleOCR-main 根目录):
+#   CUDA_VISIBLE_DEVICES=6 python tools/train.py \
+#     -c mobile_v5/configs/cls/pp_lcnet_v2_textbox_hw3_ocr_det_dataset_all.yml \
+#     -o Train.loader.batch_size_per_card=1
+# 扫 batch 显存: python tools/benchmark_train_batch.py -c mobile_v5/configs/cls/...
+
+Global:
+  model_name: PP_LCNetV2_textbox_hw3
+  use_gpu: true
+  epoch_num: 150
+  log_smooth_window: 20
+  print_batch_step: 50
+  print_mem_info: true
+  batch_profile_log: ./output/cls/pp_lcnet_v2_hw3_ocr_det_dataset_all/batch_profile.csv
+  save_model_dir: ./output/cls/pp_lcnet_v2_hw3_ocr_det_dataset_all
+  save_epoch_step: 5
+  eval_batch_step: [0, 1000]
+  cal_metric_during_train: true
+  pretrained_model: https://paddle-imagenet-models-name.bj.bcebos.com/dygraph/legendary_models/PPLCNetV2_base_ssld_pretrained.pdparams
+  checkpoints:
+  save_inference_dir:
+  use_visualdl: false
+  infer_img: doc/imgs_words_en/word_10.png
+  label_list: ["printed", "handwriting_text", "handwriting_symbol"]
+  distributed: false
+
+Architecture:
+  model_type: cls
+  algorithm: CLS
+  Transform:
+  Backbone:
+    name: PPLCNetV2_cls_base
+    scale: 1.0
+  Neck:
+  Head:
+    name: ClsHead
+    class_dim: 3
+
+# Focal + inverse-frequency alpha (order: printed, handwriting_text, handwriting_symbol)
+# Recompute after convert: N/(3*n_i) from train.txt counts
+Loss:
+  name: ClsFocalLoss
+  class_dim: 3
+  gamma: 2.0
+  class_weights: [1.329, 1.263, 0.687]
+  normalize_class_weights: true
+
+Optimizer:
+  name: Adam
+  beta1: 0.9
+  beta2: 0.999
+  lr:
+    name: Cosine
+    learning_rate: 0.001
+    warmup_epoch: 2
+  regularizer:
+    name: L2
+    factor: 0.00001
+
+PostProcess:
+  name: ClsPostProcess
+
+Metric:
+  name: ClsMetric
+  main_indicator: acc
+
+Train:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /mnt/hdd/wb/shared/new/ocr_det_dataset_cls_hw3/
+    label_file_list:
+      - /mnt/hdd/wb/shared/new/ocr_det_dataset_cls_hw3/train.txt
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - ClsLabelEncode:
+      - BaseDataAugmentation:
+      - RandAugment:
+      - ClsResizeImg:
+          image_shape: [3, 48, 192]
+      - KeepKeys:
+          keep_keys: ["image", "label"]
+  loader:
+    shuffle: true
+    batch_size_per_card: 256
+    drop_last: true
+    num_workers: 8
+
+Eval:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /mnt/hdd/wb/shared/new/ocr_det_dataset_cls_hw3/
+    label_file_list:
+      - /mnt/hdd/wb/shared/new/ocr_det_dataset_cls_hw3/val.txt
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - ClsLabelEncode:
+      - ClsResizeImg:
+          image_shape: [3, 48, 192]
+      - KeepKeys:
+          keep_keys: ["image", "label"]
+  loader:
+    shuffle: false
+    drop_last: false
+    batch_size_per_card: 256
+    num_workers: 4
+
+profiler_options: null

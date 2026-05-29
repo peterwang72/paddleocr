@@ -1,0 +1,232 @@
+# =============================================================================
+# PP-OCRv5_mobile_det — bg 数据集 + 960 crop / 1280 eval 实验配置（带注释）
+# =============================================================================
+# DetLabelEncode.ignore_tags_transcription: [] 表示 ### 符号框也参与检测训练/评估
+#
+# 训练示例（PaddleOCR-main 根目录，4 卡，每卡 batch=4）:
+#   python -m paddle.distributed.launch --gpus 3,4,5,6 tools/train.py \
+#     -c mobile_v5/configs/det/PP-OCRv5/PP-OCRv5_mobile_det_ocr_det_dataset_bg_960.yml \
+#     -o Global.distributed=true \
+#     Train.loader.batch_size_per_card=4
+#
+# 换 all 数据集时在命令行 -o 覆盖 data_dir / label_file_list / save_model_dir 即可
+# =============================================================================
+
+Global:
+  model_name: PP-OCRv5_mobile_det          # 模型名称，导出推理模型与日志标识
+  debug: false                             # 是否开启调试输出
+  use_gpu: true                            # 是否使用 GPU 训练
+  epoch_num: &epoch_num 450                # 总训练轮数；&epoch_num 供 Make*Map 引用
+  log_smooth_window: 20                    # 日志 loss 滑动平均窗口大小
+  print_batch_step: 50                     # 每隔多少 step 打印一次训练日志
+  print_mem_info: true                     # 是否打印 GPU 显存占用
+  batch_profile_log: ./output/PP-OCRv5_mobile_det_ocr_det_dataset_bg/batch_profile.csv  # batch 耗时/显存 profiling 输出路径
+  save_model_dir: ./output/PP-OCRv5_mobile_det_ocr_det_dataset_bg  # 权重、日志、checkpoint 保存目录
+  save_epoch_step: 10                      # 每隔多少 epoch 保存 latest 等 checkpoint
+  eval_batch_step:                         # 在哪些 step 触发验证集评估
+  - 0                                      # 训练开始（step 0）先评估一次
+  - 2000                                   # 之后每 2000 step 评估一次
+  cal_metric_during_train: false           # false：按 eval_batch_step 评估；非每个 batch 都算指标
+  checkpoints:                             # 续训 checkpoint 路径；空表示从头训（仍加载 pretrained_model）
+  pretrained_model: https://paddleocr.bj.bcebos.com/pretrained/PPLCNetV3_x0_75_ocr_det.pdparams  # 骨干网络预训练权重（非完整 det 模型）
+  save_inference_dir: null                 # 训练过程中是否导出推理模型；null 表示不导出
+  use_visualdl: false                      # 是否使用 VisualDL 可视化
+  infer_img: doc/imgs_en/img_10.jpg        # 文档示例单图路径（一般不用）
+  save_res_path: ./output/PP-OCRv5_mobile_det_ocr_det_dataset_bg/predicts_db.txt  # 预测结果文本保存路径
+  distributed: false                       # yaml 默认单卡；多卡训练命令行加 -o Global.distributed=true
+
+# -----------------------------------------------------------------------------
+# Architecture：检测网络结构（PPLCNetV3 + RSEFPN + DBHead）
+# -----------------------------------------------------------------------------
+Architecture:
+  model_type: det                          # 任务类型：det=文本检测
+  algorithm: DB                            # 算法：Differentiable Binarization（可微二值化）
+  Transform: null                          # 网络前无额外 Transform（增强在 Train.transforms 中）
+  Backbone:
+    name: PPLCNetV3                        # 轻量级骨干网络
+    scale: 0.75                            # 宽度缩放 0.75，mobile 小模型
+    det: True                              # 按检测任务配置 backbone 输出
+  Neck:
+    name: RSEFPN                           # 带 RSE 的 FPN，多尺度特征融合
+    out_channels: 96                       # 融合后每尺度通道数
+    shortcut: True                         # RSE 模块是否使用残差 shortcut
+  Head:
+    name: DBHead                           # DB 检测头，输出概率图与阈值图
+    k: 50                                  # DB 二值化近似阶跃函数陡峭度 k
+    fix_nan: True                          # 训练时对 NaN 做数值稳定处理
+
+# -----------------------------------------------------------------------------
+# Loss：DB 检测损失（仅训练反传使用）
+# -----------------------------------------------------------------------------
+Loss:
+  name: DBLoss                             # DB 专用损失（shrink map + threshold map）
+  balance_loss: true                       # 正负样本平衡（背景像素远多于文字）
+  main_loss_type: DiceLoss                 # shrink map 主损失类型
+  alpha: 5                                 # shrink map 损失权重；越大越强调文字区域形状
+  beta: 10                                 # threshold map 损失权重
+  ohem_ratio: 3                            # 在线难例挖掘比例（保留 loss 较大的样本）
+
+# -----------------------------------------------------------------------------
+# Optimizer：优化器与学习率（仅训练使用）
+# -----------------------------------------------------------------------------
+Optimizer:
+  name: Adam                               # Adam 优化器
+  beta1: 0.9                               # Adam 一阶矩衰减
+  beta2: 0.999                             # Adam 二阶矩衰减
+  lr:
+    name: Cosine                           # 余弦退火学习率
+    learning_rate: 0.001                   # 初始学习率 1e-3
+    warmup_epoch: 2                        # 前 2 epoch 线性 warmup
+  regularizer:
+    name: L2                               # L2 权重衰减
+    factor: 5.0e-05                        # 衰减系数 5e-5
+
+# -----------------------------------------------------------------------------
+# PostProcess：验证/推理后处理（不改权重，只影响出框与 val 指标）
+# -----------------------------------------------------------------------------
+PostProcess:
+  name: DBPostProcess                      # DB 标准后处理：二值化→轮廓→过滤→扩框
+  thresh: 0.3                              # 概率图二值化阈值；越低越易保留弱响应
+  box_thresh: 0.45                          # 框内平均得分下限；越低 recall 越高、precision 可能下降
+  max_candidates: 1000                     # 单图最多候选轮廓数；密集小字可增大
+  unclip_ratio: 1.5                        # 多边形外扩比例；越大框越宽松
+
+# -----------------------------------------------------------------------------
+# Metric：验证集评估指标
+# -----------------------------------------------------------------------------
+Metric:
+  name: DetMetric                          # 检测 IoU 匹配算 P/R/F1
+  main_indicator: hmean                    # 以 hmean 选 best_accuracy checkpoint
+
+# -----------------------------------------------------------------------------
+# Train：训练集与数据增强
+# -----------------------------------------------------------------------------
+Train:
+  dataset:
+    name: SimpleDataSet                    # 图片路径 + label 列表格式
+    data_dir: /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/  # 训练图片根目录
+    label_file_list:
+      - /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/train.txt  # 训练标注列表
+    ratio_list: [1.0]                      # 多数据源时的采样比例；单源为 1.0
+    transforms:
+    - DecodeImage:                         # 读取图像
+        img_mode: BGR                      # OpenCV BGR 格式
+        channel_first: false               # 输出 HWC（非 CHW）
+
+    - DetLabelEncode:                      # 检测标注编码为 polys / ignore_tags 等
+        ignore_tags_transcription: []      # 空列表：不忽略任何 transcription，### 符号框也参与训练
+
+    - CopyPaste: null                      # CopyPaste 增广；null 表示关闭
+
+    - IaaAugment:                          # imgaug 风格几何增广
+        augmenter_args:
+        - type: Fliplr                     # 水平翻转
+          args:
+            p: 0.5                         # 50% 概率
+        - type: Affine                     # 仿射变换
+          args:
+            rotate:                        # 随机旋转角度范围（度）
+            - -10
+            - 10
+        - type: Resize                     # 随机缩放
+          args:
+            size:                          # 缩放倍数范围
+            - 0.5
+            - 3
+
+    - EastRandomCropData:                  # 随机裁剪固定尺寸 patch（训练输入大小）
+        size:
+        - 960                              # 裁剪高 960（实验 3：原 640，利于小字/上下文）
+        - 960                              # 裁剪宽 960
+        max_tries: 50                      # 裁剪失败（无足够文字）时最多重试次数
+        keep_ratio: true                   # 裁剪前是否保持宽高比缩放
+
+    - MakeBorderMap:                       # 生成 DB 训练用 threshold/border 相关图
+        shrink_ratio: 0.4                  # 文字区域收缩比例；越小收缩越少、利于小目标
+        thresh_min: 0.3                    # border map 阈值下限
+        thresh_max: 0.7                    # border map 阈值上限
+        total_epoch: *epoch_num            # 与 Global.epoch_num 一致，用于渐进式标签
+
+    - MakeShrinkMap:                       # 生成 DB shrink map（文字收缩区域 mask）
+        shrink_ratio: 0.4                  # 收缩比例
+        min_text_size: 2                   # 小于该尺寸（像素）的标注可忽略；2 利于极小框
+        keep_thin_text: true               # 保留细笔画/细文本
+        total_epoch: *epoch_num            # 与 epoch_num 一致
+
+    - NormalizeImage:                      # ImageNet 均值方差归一化
+        scale: 1./255.                     # 像素缩放到 [0,1]
+        mean:
+        - 0.485
+        - 0.456
+        - 0.406
+        std:
+        - 0.229
+        - 0.224
+        - 0.225
+        order: hwc                         # 归一化时仍为 HWC
+
+    - ToCHWImage: null                     # HWC → CHW，供网络输入
+
+    - KeepKeys:                            # DataLoader 保留的字段
+        keep_keys:
+        - image                            # 输入图像
+        - threshold_map                    # DB threshold 监督图
+        - threshold_mask                   # threshold 有效区域 mask
+        - shrink_map                       # shrink 监督图
+        - shrink_mask                      # shrink 有效区域 mask
+
+  loader:
+    shuffle: true                          # 训练 shuffle
+    drop_last: false                       # 最后不足 batch 的样本是否丢弃
+    batch_size_per_card: 4                 # 单卡 batch（960 crop 显存大；4 卡时总 batch=16）
+    num_workers: 8                         # 数据加载子进程数
+
+# -----------------------------------------------------------------------------
+# Eval：验证集（无随机裁剪与 Make*Map）
+# -----------------------------------------------------------------------------
+Eval:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/  # 验证图片根目录
+    label_file_list:
+      - /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/val.txt  # 验证标注列表
+    transforms:
+    - DecodeImage:
+        img_mode: BGR
+        channel_first: false
+
+    - DetLabelEncode:
+        ignore_tags_transcription: []      # 验证时 ### 符号框同样参与评估
+
+    - DetResizeForTest:                    # 验证/测试时缩放策略
+        limit_side_len: 1280               # 长边上限 1280（实验 2：原 960，利于小字 recall）
+        limit_type: max                    # max：保证最长边 ≤ limit_side_len
+
+    - NormalizeImage:
+        scale: 1./255.
+        mean:
+        - 0.485
+        - 0.456
+        - 0.406
+        std:
+        - 0.229
+        - 0.224
+        - 0.225
+        order: hwc
+
+    - ToCHWImage: null
+
+    - KeepKeys:                            # 验证需保留原图尺寸与 GT 多边形
+        keep_keys:
+        - image
+        - shape                            # 原图尺寸，用于坐标还原
+        - polys                            # GT 检测框
+        - ignore_tags                      # 是否忽略该框
+
+  loader:
+    shuffle: false                         # 验证不 shuffle
+    drop_last: false
+    batch_size_per_card: 1                 # 验证 batch，一般为 1
+    num_workers: 2
+
+profiler_options: null                     # 性能分析选项；null 表示关闭

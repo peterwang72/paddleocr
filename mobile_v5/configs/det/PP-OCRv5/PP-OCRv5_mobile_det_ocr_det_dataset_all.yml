@@ -1,0 +1,211 @@
+# DetLabelEncode.ignore_tags_transcription: [] 表示 ### 符号框也参与检测训练/评估
+# 训练命令示例：
+#   python -m paddle.distributed.launch --gpus 3,4,5,6 tools/train.py \
+#     -c mobile_v5/configs/det/PP-OCRv5/PP-OCRv5_mobile_det_ocr_det_dataset_bg_960.yml \
+#     -o Global.distributed=true Train.loader.batch_size_per_card=4
+
+Global:
+  model_name: PP-OCRv5_mobile_det
+  debug: false
+  use_gpu: true
+  epoch_num: &epoch_num 400
+  log_smooth_window: 20
+  print_batch_step: 50
+  print_mem_info: true
+  batch_profile_log: ./output/PP-OCRv5_mobile_det_ocr_det_dataset_bg/batch_profile.csv
+  save_model_dir: ./output/PP-OCRv5_mobile_det_ocr_det_dataset_bg
+  save_epoch_step: 10
+  eval_batch_step:
+  - 0
+  - 2000
+  cal_metric_during_train: false
+  checkpoints:
+  pretrained_model: https://paddleocr.bj.bcebos.com/pretrained/PPLCNetV3_x0_75_ocr_det.pdparams
+  save_inference_dir: null
+  use_visualdl: false
+  infer_img: doc/imgs_en/img_10.jpg
+  save_res_path: ./output/PP-OCRv5_mobile_det_ocr_det_dataset_bg/predicts_db.txt
+  distributed: false
+
+Architecture:
+  model_type: det
+  algorithm: DB
+  Transform: null
+  Backbone:
+    name: PPLCNetV3
+    scale: 0.75  #网络宽度缩放系数 0.75，通道数约为标准版的 75%，属于 mobile 小模型
+    det: True
+  Neck:
+    name: RSEFPN
+    out_channels: 96
+    shortcut: True
+  Head:
+    name: DBHead
+    k: 50   #	DB 中近似阶跃函数的 陡峭度参数 k；k 越大二值化越“硬”，影响训练时近似二值化的形状
+    fix_nan: True
+
+Loss:
+  name: DBLoss
+  balance_loss: true
+  main_loss_type: DiceLoss
+  alpha: 5
+  beta: 10
+  ohem_ratio: 3
+
+Optimizer:
+  name: Adam
+  beta1: 0.9
+  beta2: 0.999
+  lr:
+    name: Cosine
+    learning_rate: 0.001
+    warmup_epoch: 2
+  regularizer:
+    name: L2
+    factor: 5.0e-05
+
+PostProcess:
+  name: DBPostProcess
+  thresh: 0.3
+  box_thresh: 0.45
+  max_candidates: 1000
+  unclip_ratio: 1.5
+
+Metric:
+  name: DetMetric
+  main_indicator: hmean
+
+Train:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/
+    label_file_list:
+      - /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/train.txt
+    ratio_list: [1.0]
+    transforms:
+    - DecodeImage:
+        img_mode: BGR
+        channel_first: false
+
+    - DetLabelEncode:
+        ignore_tags_transcription: []
+
+    - CopyPaste:
+        objects_paste_ratio: 0.2   # 从另一张图粘贴的文字框比例，默认 0.2
+        limit_paste: true          # 尽量粘贴到不与现有文字重叠的位置，默认 true
+
+    - IaaAugment:
+        augmenter_args:
+        - type: Fliplr
+          args:
+            p: 0.5
+        - type: Affine
+          args:
+            rotate:
+            - -10
+            - 10
+        - type: Resize
+          args:
+            size:
+            - 0.5
+            - 3
+
+    # 实验 3：增大训练 crop
+    # 原来是 640x640，现在改为 960x960
+    # 目的：保留更多上下文，同时减少小字、小符号在裁剪后过小的问题
+    - EastRandomCropData:
+        size:
+        - 960
+        - 960
+        max_tries: 50
+        keep_ratio: true
+
+    - MakeBorderMap:
+        shrink_ratio: 0.3
+        thresh_min: 0.3
+        thresh_max: 0.7
+        total_epoch: *epoch_num
+
+    - MakeShrinkMap:
+        shrink_ratio: 0.3
+        min_text_size: 1
+        keep_thin_text: true
+        total_epoch: *epoch_num
+
+    - NormalizeImage:
+        scale: 1./255.
+        mean:
+        - 0.485
+        - 0.456
+        - 0.406
+        std:
+        - 0.229
+        - 0.224
+        - 0.225
+        order: hwc
+
+    - ToCHWImage: null
+
+    - KeepKeys:
+        keep_keys:
+        - image
+        - threshold_map
+        - threshold_mask
+        - shrink_map
+        - shrink_mask
+
+  loader:
+    shuffle: true
+    drop_last: false
+    batch_size_per_card: 4
+    num_workers: 8
+
+Eval:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/
+    label_file_list:
+      - /mnt/hdd/wb/shared/new/data_ocr/ocr_det_dataset_bg/val.txt
+    transforms:
+    - DecodeImage:
+        img_mode: BGR
+        channel_first: false
+
+    - DetLabelEncode:
+        ignore_tags_transcription: []
+
+    # 实验 2：提高验证分辨率
+    # 原来 limit_side_len 是 960，现在改为 1280
+    # 目的：验证/推理时保留更多细节，提高小字、小符号、细笔画的召回率
+    - DetResizeForTest:
+        limit_side_len: 1280
+        limit_type: max
+
+    - NormalizeImage:
+        scale: 1./255.
+        mean:
+        - 0.485
+        - 0.456
+        - 0.406
+        std:
+        - 0.229
+        - 0.224
+        - 0.225
+        order: hwc
+
+    - ToCHWImage: null
+
+    - KeepKeys:
+        keep_keys:
+        - image
+        - shape
+        - polys
+        - ignore_tags
+
+  loader:
+    shuffle: false
+    drop_last: false
+    batch_size_per_card: 1
+    num_workers: 2
+
+profiler_options: null
