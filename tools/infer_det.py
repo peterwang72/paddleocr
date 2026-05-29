@@ -87,44 +87,37 @@ def main():
             with open(file, "rb") as f:
                 img = f.read()
                 data = {"image": img}
+            
+            # 图像预处理
             batch = transform(data, ops)
-
             images = np.expand_dims(batch[0], axis=0)
             shape_list = np.expand_dims(batch[1], axis=0)
             images = paddle.to_tensor(images)
+            
+            # 模型推理
             preds = model(images)
-            post_result = post_process_class(preds, shape_list)
+            
+            all_boxes = []
+            
+            if isinstance(preds, dict) and "annot_maps" in preds:
+                res_main = post_process_class({"maps": preds["maps"]}, shape_list)
+                all_boxes.extend(res_main[0]["points"])
+                res_annot = post_process_class({"maps": preds["annot_maps"]}, shape_list)
+                all_boxes.extend(res_annot[0]["points"])
+            else:
+                res = post_process_class(preds, shape_list)
+                all_boxes.extend(res[0]["points"])
 
             src_img = cv2.imread(file)
-
+            
             dt_boxes_json = []
-            # parser boxes if post_result is dict
-            if isinstance(post_result, dict):
-                det_box_json = {}
-                for k in post_result.keys():
-                    boxes = post_result[k][0]["points"]
-                    dt_boxes_list = []
-                    for box in boxes:
-                        tmp_json = {"transcription": ""}
-                        tmp_json["points"] = np.array(box).tolist()
-                        dt_boxes_list.append(tmp_json)
-                    det_box_json[k] = dt_boxes_list
-                    save_det_path = os.path.dirname(
-                        config["Global"]["save_res_path"]
-                    ) + "/det_results_{}/".format(k)
-                    draw_det_res(boxes, config, src_img, file, save_det_path)
-            else:
-                boxes = post_result[0]["points"]
-                dt_boxes_json = []
-                # write result
-                for box in boxes:
-                    tmp_json = {"transcription": ""}
-                    tmp_json["points"] = np.array(box).tolist()
-                    dt_boxes_json.append(tmp_json)
-                save_det_path = (
-                    os.path.dirname(config["Global"]["save_res_path"]) + "/det_results/"
-                )
-                draw_det_res(boxes, config, src_img, file, save_det_path)
+            for box in all_boxes:
+                tmp_json = {"transcription": "", "points": np.array(box).tolist()}
+                dt_boxes_json.append(tmp_json)
+
+            save_det_path = os.path.dirname(config["Global"]["save_res_path"]) + "/det_results/"
+            draw_det_res(all_boxes, config, src_img, file, save_det_path)
+
             otstr = file + "\t" + json.dumps(dt_boxes_json) + "\n"
             fout.write(otstr.encode())
 

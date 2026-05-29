@@ -43,6 +43,10 @@ Architecture:
     name: DBHead
     k: 50   #	DB 中近似阶跃函数的 陡峭度参数 k；k 越大二值化越“硬”，影响训练时近似二值化的形状
     fix_nan: True
+  # annot_head: 
+  #   name: DBHead
+  #   k: 50   #	DB 中近似阶跃函数的 陡峭度参数 k；k 越大二值化越“硬”，影响训练时近似二值化的形状
+  #   fix_nan: True
 
 Loss:
   name: DBLoss
